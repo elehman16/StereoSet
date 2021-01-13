@@ -1,5 +1,13 @@
-import transformers 
+import transformers
 from torch import nn
+
+
+class DistilBert(transformers.BertPreTrainedModel):
+    def __init__(self):
+        pass
+
+    def __new__(self, pretrained_model):
+        return transformers.DistilBertModel.from_pretrained(pretrained_model)
 
 class BertLM(transformers.BertPreTrainedModel):
     def __init__(self):
@@ -54,10 +62,10 @@ class ModelNSP(nn.Module):
           # for name, param in self.core_model.named_parameters():
             # print(name)
             # # freeze word token embeddings and word piece embeddings!
-            # if 'wte' in name or 'wpe' in name: 
+            # if 'wte' in name or 'wpe' in name:
               # param.requires_grad = False
         hidden_size = self.core_model.config.hidden_size
-        self.nsp_head = nn.Sequential(nn.Linear(hidden_size, nsp_dim), 
+        self.nsp_head = nn.Sequential(nn.Linear(hidden_size, nsp_dim),
             nn.Linear(nsp_dim, nsp_dim),
             nn.Linear(nsp_dim, 2))
         self.criterion = nn.CrossEntropyLoss()
@@ -75,10 +83,10 @@ class ModelNSP(nn.Module):
         if 'gpt2' in self.model_class.lower():
             output = outputs[0].mean(dim=1)
             logits = self.nsp_head(output)
-        elif 'XLNet' in self.model_class: 
-            logits = self.nsp_head(outputs[0][:,0,:]) 
+        elif 'XLNet' in self.model_class:
+            logits = self.nsp_head(outputs[0][:,0,:])
         else:
-            logits = self.nsp_head(outputs[1]) 
+            logits = self.nsp_head(outputs[1])
 
         if labels is not None:
             output = logits
@@ -87,4 +95,4 @@ class ModelNSP(nn.Module):
 
             loss = self.criterion(logits, labels)
             return output, loss
-        return logits 
+        return logits
