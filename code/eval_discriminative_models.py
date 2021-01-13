@@ -19,13 +19,56 @@ from models import models
 
 init()
 
+def create_mask(mask_shape, indicies):
+  """ Create a new mask based on the indicies given.
+  @param mask_shape is the shape of the mask (at most 2D).
+  @param indicies are the indices to remove (given as 1D).
+  @return a new mask that removes the given indices.
+  """
+  mask_ = torch.ones(mask_shape)
+  for i in indicies:
+    if len(mask_.shape) == 1:
+        mask_[i] = 0
+    else:
+        y_idx = i % mask_.shape[1]
+        x_idx = int(i / mask_.shape[1])
+        mask_[x_idx, y_idx] = 0
+
+  return mask_.to(device)
+
+def prune_model_weights(sm_location, model, percent, type_):
+  """ The model to prune weights from.
+  @param sm_location is where to store the order of weight magnitude.
+  @param model is the model to prune.
+  @param percent is the percent of weights to prune.
+  @param type_ is the type of weight to prune (e.g. dense).
+  @return a new model.
+  """
+  sd = model.state_dict()
+  names = list(filter(lambda x: type_ in x, list(sd.keys())))
+  for n in tqdm(names):
+    fname = f"{sm_location}/{n}.json"
+    if os.path.exists(fname):
+        weights = json.load(open(fname))
+    else:
+        weights = list([(abs(x.item()), idx, n) for idx, x in enumerate(sd[n].flatten().detach().cpu())])
+        weights.sort(key=lambda x: x[0])
+        json.dump(weights, open(fname, 'w'))
+
+    to_remove = weights[:int(len(weights) * percent)]
+    mask = create_mask(sd[n].shape, [x[1] for x in to_remove])
+    sd[n] = sd[n] * mask
+    mask = None
+
+  model.load_state_dict(sd)
+  return model
 
 def parse_args():
     """ Parses the command line arguments. """
     pretrained_model_choices = ['bert-base-uncased', 'bert-base-cased', "bert-large-uncased-whole-word-masking",
                                 'bert-large-uncased', 'bert-large-cased', 'gpt2', 'gpt2-medium', 'gpt2-large', 'roberta-base',
-                                'roberta-large', 'xlnet-base-cased', 'xlnet-large-cased']
-    tokenizer_choices = ["RobertaTokenizer", "BertTokenizer", "XLNetTokenizer"]
+                                'roberta-large', 'xlnet-base-cased', 'xlnet-large-cased', 'distilbert']
+    tokenizer_choices = ["RobertaTokenizer", "BertTokenizer", "XLNetTokenizer", "DistilBertTokenizer"]
     parser = ArgumentParser()
     parser.add_argument(
         "--pretrained-class", default="bert-base-cased", choices=pretrained_model_choices,
@@ -39,11 +82,11 @@ def parse_args():
                         help="Choose the output directory for predictions.")
     parser.add_argument("--output-file", default=None, type=str,
                         help="Choose the name of the predictions file")
-
     parser.add_argument("--skip-intrasentence", help="Skip intrasentence evaluation.",
                         default=False, action="store_true")
     parser.add_argument("--intrasentence-model", type=str, default='BertLM', choices=[
-                        'BertLM', 'BertNextSentence', 'RoBERTaLM', 'XLNetLM', 'XLMLM', 'GPT2LM', 'ModelNSP'],
+                        'BertLM', 'BertNextSentence', 'RoBERTaLM', 'XLNetLM', 'XLMLM',
+                        'GPT2LM', 'ModelNSP', 'DistilBert'],
                         help="Choose a model architecture for the intrasentence task.")
     parser.add_argument("--intrasentence-load-path", default=None,
                         help="Load a pretrained model for the intrasentence task.")
@@ -59,6 +102,8 @@ def parse_args():
                         help="Choose a string tokenizer.")
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--max-seq-length", type=int, default=128)
+    parser.add_argument("--prune-percent", type=float, default=0.0)
+    parser.add_argument("--store-weight-location", type=str, default='sorted_model_weights/')
     return parser.parse_args()
 
 
@@ -67,8 +112,9 @@ class BiasEvaluator():
                  input_file="data/bias.json", intrasentence_model="BertLM",
                  intersentence_model="BertNextSentence", tokenizer="BertTokenizer",
                  intersentence_load_path=None, intrasentence_load_path=None, skip_intrasentence=False,
-                 skip_intersentence=False, batch_size=1, max_seq_length=128, 
-                 output_dir="predictions/", output_file="predictions.json"):
+                 skip_intersentence=False, batch_size=1, max_seq_length=128,
+                 output_dir="predictions/", output_file="predictions.json",
+                 prune_percent=0.0, store_weight_location='sorted_model_weights/'):
         print(f"Loading {input_file}...")
         filename = os.path.abspath(input_file)
         self.dataloader = dataloader.StereoSet(filename)
@@ -81,6 +127,10 @@ class BiasEvaluator():
         self.SKIP_INTRASENTENCE = skip_intrasentence
         self.INTRASENTENCE_LOAD_PATH = intrasentence_load_path
         self.INTERSENTENCE_LOAD_PATH = intersentence_load_path
+
+        # store pruning information
+        self.PRUNE_PERCENT = prune_percent
+        self.STORE_WEIGHT_LOCATION = store_weight_location
 
         self.PRETRAINED_CLASS = pretrained_class
         self.TOKENIZER = tokenizer
@@ -129,6 +179,10 @@ class BiasEvaluator():
         if torch.cuda.device_count() > 1:
             print("Let's use", torch.cuda.device_count(), "GPUs!")
             model = nn.DataParallel(model)
+
+        if self.PRUNE_PERCENT > 0.0:
+            model = prune_model_weights(self.STORE_WEIGHT_LOCATION, model, self.PRUNE_PERCENT, type_='dense')
+
         model.eval()
 
         print()
@@ -141,7 +195,7 @@ class BiasEvaluator():
 
         pad_to_max_length = True if self.batch_size > 1 else False
         dataset = dataloader.IntrasentenceLoader(self.tokenizer, max_seq_length=self.max_seq_length,
-                                                 pad_to_max_length=pad_to_max_length, 
+                                                 pad_to_max_length=pad_to_max_length,
                                                  input_file=args.input_file)
 
         loader = DataLoader(dataset, batch_size=self.batch_size)
@@ -160,8 +214,11 @@ class BiasEvaluator():
             mask_idxs = (input_ids == self.MASK_TOKEN_IDX)
 
             # get the probabilities
-            output = model(input_ids, attention_mask=attention_mask,
-                           token_type_ids=token_type_ids)[0].softmax(dim=-1)
+            if self.INTRASENTENCE_MODEL == 'DistilBert':
+                output = model(input_ids, attention_mask=attention_mask)[0].softmax(dim=-1) 
+            else:
+                output = model(input_ids, attention_mask=attention_mask,
+                               token_type_ids=token_type_ids)[0].softmax(dim=-1)
 
             output = output[mask_idxs]
             output = output.index_select(1, next_token).diag()
@@ -196,6 +253,9 @@ class BiasEvaluator():
 
         if self.INTERSENTENCE_LOAD_PATH:
             model.load_state_dict(torch.load(self.INTERSENTENCE_LOAD_PATH))
+
+        if self.PRUNE_PERCENT > 0.0:
+            model = prune_model_weights(self.STORE_WEIGHT_LOCATION, model, self.PRUNE_PERCENT, type_='dense')
 
         model.eval()
         dataset = IntersentenceDataset(self.tokenizer, args)
