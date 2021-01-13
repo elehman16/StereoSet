@@ -106,7 +106,6 @@ def parse_args():
     parser.add_argument("--store-weight-location", type=str, default='sorted_model_weights/')
     return parser.parse_args()
 
-
 class BiasEvaluator():
     def __init__(self, pretrained_class="bert-large-uncased-whole-word-masking", no_cuda=False,
                  input_file="data/bias.json", intrasentence_model="BertLM",
@@ -215,7 +214,7 @@ class BiasEvaluator():
 
             # get the probabilities
             if self.INTRASENTENCE_MODEL == 'DistilBert':
-                output = model(input_ids, attention_mask=attention_mask)[0].softmax(dim=-1) 
+                output = model(input_ids, attention_mask=attention_mask)[0].softmax(dim=-1)
             else:
                 output = model(input_ids, attention_mask=attention_mask,
                                token_type_ids=token_type_ids)[0].softmax(dim=-1)

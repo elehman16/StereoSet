@@ -14,6 +14,7 @@ from tqdm import tqdm
 import dataloader
 from intersentence_loader import IntersentenceDataset
 from models import models
+from eval_discriminative_models import prune_model_weights
 
 init()
 
@@ -35,7 +36,7 @@ def parse_args():
 
     parser.add_argument("--intersentence-model",
                         default="ModelNSP", type=str, help="Choose a intersentence model architecture.")
-    parser.add_argument("--intersentence-load-path", default=None, 
+    parser.add_argument("--intersentence-load-path", default=None,
                         help="Load a pretrained model for the intersentence task.")
 
     parser.add_argument("--tokenizer", default="GPT2Tokenizer", type=str)
@@ -45,8 +46,10 @@ def parse_args():
     parser.add_argument("--skip-intersentence",
                         default=False, action="store_true", help="Skip the intersentence task.")
     parser.add_argument("--skip-intrasentence",
-                        default=False, action="store_true", help="SKip the intrasentence task.")
+                        default=False, action="store_true", help="Skip the intrasentence task.")
     parser.add_argument("--small", default=False, action="store_true")
+    parser.add_argument("--prune-percent", type=float, default=0.0)
+    parser.add_argument("--store-weight-location", type=str, default='sorted_gpt_weights/')
     return parser.parse_args()
 
 
@@ -65,6 +68,10 @@ class BiasEvaluator(object):
         self.SKIP_INTERSENTENCE = skip_intersentence
         self.SKIP_INTRASENTENCE = skip_intrasentence
         self.UNCONDITIONAL_START_TOKEN = unconditional_start_token
+
+        # store pruning information
+        self.PRUNE_PERCENT = prune_percent
+        self.STORE_WEIGHT_LOCATION = store_weight_location
 
         self.PRETRAINED_CLASS = pretrained_class
         self.TOKENIZER = tokenizer
@@ -102,6 +109,10 @@ class BiasEvaluator(object):
 
         model = getattr(models, self.INTRASENTENCE_MODEL)(
             self.PRETRAINED_CLASS).to(self.device)
+
+        if self.PRUNE_PERCENT > 0.0:
+            model = prune_model_weights(self.STORE_WEIGHT_LOCATION, model, self.PRUNE_PERCENT, type_='weight')
+
         model.eval()
 
         start_token = torch.tensor(self.tokenizer.encode(
@@ -132,7 +143,7 @@ class BiasEvaluator(object):
                 # ensure that we have a probability on every token
                 assert len(tokens) == len(joint_sentence_probability)
 
-                score = np.sum([np.log2(i) for i in joint_sentence_probability]) 
+                score = np.sum([np.log2(i) for i in joint_sentence_probability])
                 score /= len(joint_sentence_probability)
                 score = np.power(2, score)
 
@@ -149,6 +160,9 @@ class BiasEvaluator(object):
 
         if self.PRETRAINED_CLASS == "gpt2-xl":
             model = amp.initialize(model, opt_level="O3")
+
+        if self.PRUNE_PERCENT > 0.0:
+            model = prune_model_weights(self.STORE_WEIGHT_LOCATION, model, self.PRUNE_PERCENT, type_='weight')
 
         start_token = torch.tensor(self.tokenizer.encode(
             self.UNCONDITIONAL_START_TOKEN)).to(self.device).unsqueeze(0)
@@ -252,6 +266,9 @@ class BiasEvaluator(object):
         nsp_dim = 300
         model = getattr(models, self.INTERSENTENCE_MODEL)(
             self.PRETRAINED_CLASS, nsp_dim=nsp_dim).to(self.device)
+
+        if self.PRUNE_PERCENT > 0.0:
+            model = prune_model_weights(self.STORE_WEIGHT_LOCATION, model, self.PRUNE_PERCENT, type_='weight')
 
         if "gpt2" in args.tokenizer.lower():
             print("Adding <PAD> token to tokenizer...")
